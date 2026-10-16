@@ -1,0 +1,86 @@
+name: vulcan
+x-api: &api
+  build:
+    context: .
+    target: api
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  healthcheck:
+    test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+    interval: 5s
+    timeout: 2s
+    retries: 20
+services:
+  dashboard:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports: ["127.0.0.1:8080:80"]
+    depends_on:
+      api: {condition: service_healthy}
+    networks: [lab]
+  api:
+    <<: *api
+    environment:
+      LAB_DB: /data/lab.db
+      LAB_CONFIG: /data/active.yaml
+      LAB_START_MODE: ${LAB_START_MODE:-}
+      MCP_URL: http://mcp:8001/mcp
+      SINK_URL: http://sinks:8002
+      RUNNER_URL: http://runner:8003
+      OLLAMA_URL: http://ollama:11434
+    volumes: [lab-data:/data]
+    networks: [lab, planner]
+    depends_on:
+      mcp: {condition: service_healthy}
+      sinks: {condition: service_healthy}
+  mcp:
+    <<: *api
+    command: [uvicorn, services.mcp:app, --host, 0.0.0.0, --port, '8001', --no-access-log]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+    networks: [lab]
+  sinks:
+    <<: *api
+    command: [uvicorn, services.sinks:app, --host, 0.0.0.0, --port, '8002', --no-access-log]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health')"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+    networks: [lab]
+  runner:
+    build: {context: ., target: runner}
+    volumes: [/var/run/docker.sock:/var/run/docker.sock]
+    networks: [lab]
+    read_only: true
+    tmpfs: [/tmp]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health')"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+  task-image:
+    build: {context: ., target: task}
+    image: vulcan-task:1.2
+    profiles: [prepare]
+    network_mode: none
+    volumes: [synthetic-fixtures:/fixtures]
+  ollama:
+    image: ollama/ollama:0.12.6
+    profiles: [ollama]
+    volumes: [ollama-data:/root/.ollama]
+    networks: [lab, planner]
+networks:
+  lab: {name: vulcan_lab, internal: true}
+  planner: {}
+volumes:
+  lab-data:
+  ollama-data:
+  synthetic-fixtures: {name: vulcan-synthetic-fixtures}

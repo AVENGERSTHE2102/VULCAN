@@ -1,0 +1,1 @@
+SYNTHETIC customer ACME-LAB: plan=training, contact=learner@example.invalid

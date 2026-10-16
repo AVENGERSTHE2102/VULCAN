@@ -1,0 +1,4 @@
+# Physically remove the API's external route. Ollama is disabled unless started separately.
+services:
+  api:
+    networks: !override [lab]

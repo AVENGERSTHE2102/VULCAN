@@ -1,0 +1,11 @@
+mode: vulnerable
+controls:
+  task_scope: false
+  approval: false
+  memory: false
+  mcp_pinning: false
+  iam: false
+  egress: false
+  sandbox: false
+request_budget: 100
+token_budget: 60000

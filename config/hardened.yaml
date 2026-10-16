@@ -1,0 +1,11 @@
+mode: hardened
+controls:
+  task_scope: true
+  approval: true
+  memory: true
+  mcp_pinning: true
+  iam: true
+  egress: true
+  sandbox: true
+request_budget: 100
+token_budget: 60000

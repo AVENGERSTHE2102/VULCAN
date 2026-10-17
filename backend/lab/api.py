@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -138,17 +139,43 @@ def create_app(store=None, config=None, planners=None):
                 [
                     {
                         "role": "user",
-                        "content": 'Return only {"tool":"finish","arguments":{"summary":"ok"}}',
+                        "content": 'Return exactly one JSON object with a short string "thought", "tool" set to "finish", and "arguments" set to {"summary":"ok"}.',
                     }
                 ],
                 engine.rules(sid(r)),
             )
             return {"ok": True, "message": "Provider responded with a valid proposal"}
-        except (ValueError, KeyError, TypeError, TimeoutError, httpx.HTTPError):
-            return {
-                "ok": False,
-                "message": "Provider failed or budget exhausted; response details omitted to protect credentials",
+        except ValueError as exc:
+            error = str(exc).lower()
+            provider = body.provider.title()
+            messages = {
+                400: f"{provider} rejected the model or request format (HTTP 400). Check the model setting.",
+                401: f"{provider} rejected the API key (HTTP 401). Check the key in Settings.",
+                403: f"{provider} denied this request (HTTP 403). Check project or model access.",
+                429: f"{provider} quota or rate limit reached (HTTP 429). Check provider limits.",
             }
+            match = re.search(r"http (\d{3})", error)
+            status = int(match[1]) if match else None
+            message = (
+                messages.get(
+                    status,
+                    f"{provider} returned HTTP {status}. Check provider model and account access.",
+                )
+                if status is not None
+                else "The lab request/token budget is exhausted."
+                if "budget" in error
+                else "Provider responded, but its output did not match the lab proposal JSON format."
+            )
+            detail = re.search(r"cooldown applied: (.+)", str(exc), re.I)
+            if detail:
+                message += f" Provider detail: {detail[1][:240]}"
+            return {"ok": False, "message": message}
+        except (TimeoutError, httpx.TimeoutException):
+            return {"ok": False, "message": "Provider request timed out."}
+        except httpx.HTTPError:
+            return {"ok": False, "message": "Could not connect to the provider endpoint."}
+        except (KeyError, TypeError):
+            return {"ok": False, "message": "Provider response was missing required proposal fields."}
 
     @app.get("/api/missions")
     def mission_list():
@@ -159,7 +186,9 @@ def create_app(store=None, config=None, planners=None):
         if mission not in range(1, 8):
             raise HTTPException(404, "Unknown mission")
         try:
-            return engine.start(sid(r), mission, body.mode, body.followup, body.seed)
+            return engine.start(
+                sid(r), mission, body.mode, body.followup, body.seed, body.request, body.payload
+            )
         except ValueError as e:
             raise HTTPException(409, str(e)) from None
 
@@ -204,7 +233,7 @@ def create_app(store=None, config=None, planners=None):
                 if (
                     not current
                     or current["status"] in TERMINAL
-                    or current["status"] == "pending_approval"
+                    or current["status"] in ("pending_approval", "waiting_for_provider")
                 ):
                     yield "event: settled\ndata: {}\n\n"
                     break
@@ -216,6 +245,16 @@ def create_app(store=None, config=None, planners=None):
             media_type="text/event-stream",
             headers={"X-Accel-Buffering": "no"},
         )
+
+    @app.post("/api/tasks/{tid}/resume")
+    async def resume_task(r: Request, tid: str):
+        session = planners.session(sid(r))
+        if session["offline"] or not session["keys"] and not session["ollama"]:
+            raise HTTPException(409, "Configure a live planner in Settings before resuming this prompt")
+        try:
+            return engine.resume(sid(r), tid)
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from None
 
     @app.post("/api/tasks/{tid}/approval")
     async def approval(r: Request, tid: str, body: ApprovalInput):
@@ -588,7 +627,7 @@ from pydantic import SecretStr
 
 
 class SettingsInput(StrictModel):
-    provider: Literal["groq", "openrouter", "mistral"] | None = None
+    provider: Literal["openai", "groq", "openrouter", "mistral"] | None = None
     key: SecretStr | None = Field(default=None, max_length=500)
     model: str | None = Field(
         default=None, min_length=1, max_length=100, pattern=r"^[\w./:@-]+$"
@@ -598,13 +637,15 @@ class SettingsInput(StrictModel):
 
 
 class ProviderInput(StrictModel):
-    provider: Literal["groq", "openrouter", "mistral"]
+    provider: Literal["openai", "groq", "openrouter", "mistral"]
 
 
 class RunInput(StrictModel):
     mode: Literal["live", "replay", "scripted"] = "live"
     followup: bool = False
     seed: int = Field(default=7, ge=0, le=2147483647)
+    request: str | None = Field(default=None, max_length=6000)
+    payload: str | None = Field(default=None, max_length=6000)
 
 
 class ApprovalInput(StrictModel):

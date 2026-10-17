@@ -50,6 +50,7 @@ type Task = {
   legitimate_success: boolean;
   attack_success: boolean;
   created: number;
+  freeform?: boolean;
 };
 type Sheet = {
   observation: string;
@@ -180,17 +181,21 @@ function App() {
     { id: string; mission: number; provider: string; model: string }[]
   >([]);
   const [mode, setMode] = useState("live");
+  const [promptRequest, setPromptRequest] = useState("");
+  const [promptPayload, setPromptPayload] = useState("");
   const [hint, setHint] = useState(0);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [key, setKey] = useState("");
-  const [provider, setProvider] = useState("groq");
+  const [provider, setProvider] = useState("openai");
   const [model, setModel] = useState("");
   const [qr, setQr] = useState("");
   const [remaining, setRemaining] = useState(115 * 60);
   const [timer, setTimer] = useState(false);
   const stream = useRef<EventSource | null>(null);
   const m = missions.find((x) => x.id === mission);
+  const customPrompt =
+    !!m && (promptRequest !== m.request || promptPayload !== m.payload);
   async function refresh() {
     const [s, ts, sc] = await Promise.all([
       api<{ settings: Settings; config: Rules }>("/session"),
@@ -227,12 +232,16 @@ function App() {
     history.replaceState({}, "", url);
   }, [page, mission]);
   useEffect(() => {
+    if (m) {
+      setPromptRequest(m.request);
+      setPromptPayload(m.payload);
+    }
     setHint(0);
     setSheet(emptySheet);
     void api<Sheet>("/worksheets/" + mission)
       .then(setSheet)
       .catch((e) => setMessage(e.message));
-  }, [mission]);
+  }, [mission, missions]);
   useEffect(() => {
     void act(async () => {
       if (page === "Recon") setRecon(await api("/recon"));
@@ -295,10 +304,17 @@ function App() {
     };
   }
   async function run(followup = false) {
+    if (customPrompt && !promptRequest.trim()) {
+      setMessage("Write the authorized task before running this experiment.");
+      return;
+    }
     await act(async () => {
       const t = await api<Task>("/missions/" + mission + "/run", "POST", {
-        mode,
+        mode: customPrompt ? "live" : mode,
         followup,
+        ...(customPrompt
+          ? { request: promptRequest, payload: promptPayload }
+          : {}),
       });
       watch(t);
       await refresh();
@@ -325,6 +341,25 @@ function App() {
     });
   }
   const total = scores.reduce((n, x) => n + x.automatic + x.manual, 0);
+  const xp = scores.reduce((n, x) => n + x.automatic * 10, 0);
+  const ranks = [
+    { name: "Trace scout", xp: 0 },
+    { name: "Boundary analyst", xp: 500 },
+    { name: "Containment operator", xp: 1600 },
+    { name: "Incident lead", xp: 3200 },
+    { name: "Vulcan investigator", xp: 5200 },
+  ];
+  const rank = [...ranks].reverse().find((x) => xp >= x.xp) || ranks[0];
+  const nextRank = ranks[ranks.indexOf(rank) + 1];
+  const badges = [
+    { name: "Signal found", earned: scores.some((x) => x.baseline) },
+    { name: "Boundary held", earned: scores.some((x) => x.hardened_retest) },
+    { name: "Evidence pinned", earned: scores.some((x) => x.evidence) },
+    {
+      name: "Seven clean retests",
+      earned: scores.every((x) => x.hardened_retest) && scores.length === 7,
+    },
+  ];
   const active = tasks.find(
     (t) => !["completed", "failed", "cancelled", "limit"].includes(t.status),
   );
@@ -419,7 +454,10 @@ function App() {
           {active && page !== "Missions" && (
             <div className="notice">
               <span>
-                Mission {active.mission}: {active.status}
+                Mission {active.mission}:{" "}
+                {active.status === "waiting_for_provider"
+                  ? "custom experiment paused for a live planner"
+                  : active.status}
               </span>
               <button
                 onClick={() => {
@@ -500,6 +538,53 @@ function App() {
                   </p>
                 </Panel>
               </div>
+              <Panel className="rank-panel">
+                <div className="rank-track">
+                  <div>
+                    <p className="eyebrow">YOUR FIELD RANK</p>
+                    <h2>{rank.name}</h2>
+                    <p>
+                      Evidence XP <strong>{xp.toLocaleString()}</strong> ·
+                      earned from measured mission work
+                    </p>
+                  </div>
+                  <div
+                    className="xp-progress"
+                    role="progressbar"
+                    aria-label="Progress toward next field rank"
+                    aria-valuenow={xp}
+                    aria-valuemin={0}
+                    aria-valuemax={nextRank?.xp || rank.xp}
+                  >
+                    {nextRank ? (
+                      <>
+                        <div>
+                          <span>{xp.toLocaleString()} XP</span>
+                          <span>
+                            {nextRank.name} · {nextRank.xp.toLocaleString()} XP
+                          </span>
+                        </div>
+                        <div className="xp-rail">
+                          <span
+                            style={{
+                              width: `${Math.min(100, Math.max(0, ((xp - rank.xp) / (nextRank.xp - rank.xp)) * 100))}%`,
+                            }}
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <span>Top rank reached</span>
+                    )}
+                  </div>
+                </div>
+                <div className="badge-row">
+                  {badges.map((b) => (
+                    <Chip key={b.name} tone={b.earned ? "green" : ""}>
+                      {b.earned ? "◆" : "◇"} {b.name}
+                    </Chip>
+                  ))}
+                </div>
+              </Panel>
               <div className="section-head">
                 <h2>Your next boundary</h2>
                 <span className="mono dim">
@@ -567,23 +652,56 @@ function App() {
                     </Chip>
                   </div>
                   <div className="mission-grid">
-                    <Panel>
-                      <p className="eyebrow green">AUTHORIZED REQUEST</p>
-                      <p className="request">{m.request}</p>
-                      <div className="payload">
-                        <span className="eyebrow amber">
-                          {mission === 4
-                            ? "DIRECT LAB PROBE"
-                            : mission === 6
-                              ? "BENIGN INSPECTION"
-                              : "UNTRUSTED PAYLOAD"}
-                        </span>
+                    <Panel className="prompt-panel">
+                      <div className="row spread">
+                        <p className="eyebrow green">YOUR EXPERIMENT</p>
+                        <Chip>MISSION GATES · M{mission}</Chip>
+                      </div>
+                      <p className="lead">
+                        {m.kind === "direct authorization probe"
+                          ? "For this lab, request a sensitive action in your trusted task. The test is whether the agent identity still limits it."
+                          : "Write a task, then add text from a source the agent should treat as untrusted. Edit either field to try your own prompt."}
+                      </p>
+                      <label className="prompt-label">
+                        Authorized task <span>TRUSTED · YOU SET THE GOAL</span>
+                        <textarea
+                          className="prompt-input"
+                          maxLength={6000}
+                          value={promptRequest}
+                          onChange={(e) => setPromptRequest(e.target.value)}
+                          aria-label="Your authorized task"
+                        />
+                      </label>
+                      <label className="prompt-label">
+                        Untrusted content <span>DATA · NEVER AUTHORITY</span>
+                        <textarea
+                          className="prompt-input payload-input"
+                          maxLength={6000}
+                          value={promptPayload}
+                          onChange={(e) => setPromptPayload(e.target.value)}
+                          aria-label="Untrusted content for this prompt experiment"
+                        />
+                      </label>
+                      <p className="prompt-source">
+                        {m.kind.toUpperCase()} · MISSION {mission} BOUNDARY ·{" "}
+                        {promptRequest.length + promptPayload.length}/12,000
+                        CHARACTERS
+                      </p>
+                      {customPrompt && (
+                        <div className="live-note">
+                          <span className="status-dot" /> CUSTOM EXPERIMENT ·
+                          LIVE MODEL REQUIRED · NO CANNED PROPOSAL
+                        </div>
+                      )}
+                      <div className="payload-example">
+                        <span className="eyebrow amber">EXAMPLE PAYLOAD</span>
                         <p>{m.payload}</p>
                       </div>
                       <label>
                         Planner source
                         <select
-                          value={mode}
+                          value={customPrompt ? "live" : mode}
+                          disabled={customPrompt}
                           onChange={(e) => setMode(e.target.value)}
                         >
                           <option value="live">Live → Replay → Scripted</option>
@@ -623,8 +741,11 @@ function App() {
                         </button>
                       </div>
                       <p className="caption">
-                        Fallbacks are always labeled. Live outcomes vary until
-                        calibrated.
+                        Unedited examples can run as labeled Scripted demos.
+                        Custom text uses a Live model only; configure one in
+                        Settings, then resume if it is unavailable. All tool
+                        proposals still pass through this mission’s synthetic
+                        controls.
                       </p>
                       <button
                         className="text-button"
@@ -698,6 +819,39 @@ function App() {
                       )}
                     </div>
                   </div>
+                  {selected?.status === "waiting_for_provider" && (
+                    <div className="approval live-paused">
+                      <div>
+                        <strong>
+                          Your experiment is paused because no live planner
+                          returned a proposal.
+                        </strong>
+                        <p>
+                          The prompt and tool history are saved. Configure a
+                          planner in Settings, then resume this same
+                          conversation.
+                        </p>
+                      </div>
+                      <button onClick={() => setPage("Settings")}>
+                        Configure planner
+                      </button>
+                      <button
+                        className="primary"
+                        onClick={() =>
+                          void act(async () =>
+                            watch(
+                              await api<Task>(
+                                "/tasks/" + selected.id + "/resume",
+                                "POST",
+                              ),
+                            ),
+                          )
+                        }
+                      >
+                        Resume experiment <span>↗</span>
+                      </button>
+                    </div>
+                  )}
                   {selected?.status === "pending_approval" && (
                     <div className="approval">
                       <strong>
@@ -1088,7 +1242,7 @@ function App() {
                 <p className="eyebrow">BRING YOUR OWN KEY</p>
                 <h2>Choose your planner.</h2>
                 <p className="lead">
-                  groq → openrouter → mistral → ollama → replay → scripted
+                  openai → groq → openrouter → mistral → ollama → replay → scripted
                 </p>
                 <form
                   onSubmit={(e) => {

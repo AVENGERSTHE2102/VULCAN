@@ -86,7 +86,7 @@ Distinguish indirect injection from direct authorization probes and benign inspe
 ## Assumptions and release gates
 
 - One installation serves one learner. Retain session boundaries and backup facilitator keys without adding shared classroom hosting.
-- Start hosted calibration with Groq `llama-3.1-8b-instant`; use `qwen2.5:3b` as the initial optional local candidate. Availability, cost, and suitability remain calibration checks.
+- Start hosted calibration with Groq `openai/gpt-oss-20b`; use `qwen2.5:3b` as the initial optional local candidate. Availability, cost, and suitability remain calibration checks.
 - “No external network call” applies to offline runs. Hosted runs permit only configured planner-provider traffic; agent tools remain lab-local.
 - Sensitive provenance is enforced outside the model. Full prompt/output auditing excludes credentials and uses synthetic task data only.
 - Release requires measured ≥70% vulnerable attack success and ≥90% hardened legitimate-task success for the selected live configuration. Demonstrate deterministic containment of the same recorded malicious proposals independently.

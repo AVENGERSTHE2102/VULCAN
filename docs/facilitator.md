@@ -21,3 +21,10 @@ Scores are 30 for a vulnerable impact, 40 for a hardened denial plus legitimate 
 For offline workshops, use Scripted. Explain that these are demonstrations of actual execution gates with deterministic proposals, not measurements of a language model. If a genuine recording is available, its Replay label and original planner provenance stay visible. Keep a backup planner key outside the repo in a password manager; enter it only through Settings when needed. Global reset and API restart erase memory-only keys.
 
 Working closing: **Observe the attack. Trace the boundary. Apply the control. Prove the legitimate workflow still works.**
+
+
+## Open prompt experiments
+
+In Missions, edit the trusted task and untrusted content. The prefilled text is just an example. Editing either field switches the run to Live mode and keeps the selected mission execution gates in place. Custom prompts never invoke the canned proposal sequence; if no live planner responds, the task pauses with its context intact. Configure a planner and resume it, or reset the mission. Learners should use synthetic text only because Live sends their custom text to the selected provider.
+
+Field ranks and badges are calculated from observed baseline impact, hardened retests, and pinned evidence. XP excludes manual self-assessment; ranks do not lock missions.

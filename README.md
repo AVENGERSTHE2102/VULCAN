@@ -1,12 +1,12 @@
 # VULCAN 1.2 · Solo Learning Lab
 
-A local synthetic lab for agent prompt injection and containment. Seven missions connect attacker-controlled context to observable proposals, controls, and legitimate outcomes.
+A local synthetic lab for agent prompt injection and containment. Seven missions connect attacker-controlled context to observable proposals, controls, and legitimate outcomes. The dashboard now includes an open prompt playground: edit the trusted task and untrusted text to test your own ideas against a mission’s gates. Custom prompts require a Live planner; they never silently switch to canned proposals. Verified evidence earns ranks and badges.
 
 ```sh
-make up       # prepared Docker images: dashboard http://localhost:8080
+make up       # build and start the lab: dashboard http://localhost:8080
 ```
 
-No key required: traces use an explicit **Scripted** label. Enter an optional planner key in Settings for **Live** runs. Optional Ollama: `docker compose --profile ollama up -d`, then `docker compose exec ollama ollama pull qwen2.5:3b`.
+No key required: examples use an explicit **Scripted** label. Enter a rotated planner key in Settings for **Live** runs. Custom prompts are sent to that planner with synthetic lab context. Optional Ollama: `docker compose --profile ollama up -d`, then `docker compose exec ollama ollama pull qwen2.5:3b`.
 
 For development without Docker:
 

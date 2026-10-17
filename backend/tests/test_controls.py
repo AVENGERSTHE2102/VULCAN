@@ -3,9 +3,9 @@ import time
 import pytest
 import yaml
 from lab.contracts import Proposal
-from lab.fixtures import manifest, proposal
+from lab.fixtures import SCHEMAS, manifest, proposal
 from lab.policy import Config, load_snapshot, evaluate, digest
-from lab.providers import Planners, parse_react, retry_delay, checkpoint
+from lab.providers import PROVIDERS, Planners, parse_react, retry_delay, checkpoint
 from lab.engine import Engine
 from lab.store import Store
 
@@ -35,6 +35,16 @@ def test_react_formats():
         parse_react('```json\n{"tool":"crm.export","arguments":{}}\n```').tool
         == "crm.export"
     )
+
+
+def test_m6_inspection_is_a_legitimate_task():
+    from lab.engine import legitimate
+
+    assert legitimate(Proposal(tool="runner.inspect"), 6)
+
+
+def test_groq_default_uses_supported_replacement_model():
+    assert PROVIDERS["groq"][1] == "openai/gpt-oss-20b"
 
 
 def test_atomic_reload(tmp_path):
@@ -93,7 +103,7 @@ async def test_provider_failover_preserves_state_and_deduplicates(
     async def request(sid, name, messages, rules, seed):
         calls.append((name, json.loads(json.dumps(messages))))
         if name == "groq":
-            raise ValueError("unavailable")
+            raise ValueError("unavailable: test-groq-key")
         if not any("Tool result:" in x["content"] for x in messages):
             return proposal(
                 "tickets.update", ticket="T-1043", field="status", value="closed"
@@ -118,6 +128,10 @@ async def test_provider_failover_preserves_state_and_deduplicates(
         x["kind"] == "decision" and x["data"]["control"] == "idempotency"
         for x in events
     )
+    provider_error = next(
+        x["data"]["status"] for x in events if x["kind"] == "provider"
+    )
+    assert "unavailable" in provider_error and "test-groq-key" not in provider_error
     assert e.store.get("s", "task", t["id"])["status"] == "limit"
 
 
@@ -137,6 +151,59 @@ def test_key_status_and_redaction(client, app):
     )
     assert client.post("/api/reset").json()["keys_cleared"]
     assert not client.get("/api/settings").json()["providers"][0]["configured"]
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        ("Provider returned HTTP 401; cooldown applied", "HTTP 401"),
+        ("Provider returned HTTP 404; cooldown applied", "HTTP 404"),
+        ("Provider returned HTTP 429; cooldown applied", "HTTP 429"),
+        ("Expected one JSON proposal", "proposal JSON format"),
+    ],
+)
+def test_provider_test_reports_safe_failure(client, app, monkeypatch, failure, expected):
+    secret = "gsk_SYNTHETIC_TEST_SECRET_123456"
+    client.post("/api/settings", json={"provider": "groq", "key": secret})
+
+    async def reject(*args, **kwargs):
+        raise ValueError(failure)
+
+    monkeypatch.setattr(app.state.engine.planners, "request", reject)
+    response = client.post("/api/settings/test", json={"provider": "groq"})
+    assert expected in response.json()["message"]
+    assert secret not in response.text
+
+
+def test_provider_test_requests_explicit_json(client, app, monkeypatch):
+    client.post("/api/settings", json={"provider": "groq", "key": "synthetic-key"})
+    captured = {}
+
+    async def accept(sid, provider, messages, rules):
+        captured["messages"] = messages
+        return Proposal(tool="finish", arguments={"summary": "ok"}), "mock-model"
+
+    monkeypatch.setattr(app.state.engine.planners, "request", accept)
+    result = client.post("/api/settings/test", json={"provider": "groq"}).json()
+    assert result["ok"]
+    assert "JSON" in captured["messages"][0]["content"]
+
+
+def test_resume_schedules_from_api_event_loop(client, app, monkeypatch):
+    client.post("/api/settings", json={"provider": "openai", "key": "test-key"})
+    sid = client.cookies["vulcan_session"]
+    app.state.engine.store.put(
+        sid,
+        "task",
+        "resume-test",
+        {"id": "resume-test", "mission": 1, "status": "waiting_for_provider", "freeform": True},
+        1,
+    )
+    launched = []
+    monkeypatch.setattr(app.state.engine, "launch", lambda *args: launched.append(args))
+    response = client.post("/api/tasks/resume-test/resume")
+    assert response.status_code == 200
+    assert launched == [(sid, "resume-test")]
 
 
 def test_invalid_policy_and_cross_origin(client):
@@ -257,7 +324,7 @@ async def test_reservation_budget_blocks_before_network():
         await p.request("s", "groq", [{"role": "user", "content": "synthetic"}], rules)
 
 
-@pytest.mark.parametrize("provider", ["groq", "openrouter", "mistral", "ollama"])
+@pytest.mark.parametrize("provider", ["openai", "groq", "openrouter", "mistral", "ollama"])
 async def test_provider_adapter_contract(provider, monkeypatch):
     import httpx
 
@@ -269,7 +336,13 @@ async def test_provider_adapter_contract(provider, monkeypatch):
     def handler(request):
         data = json.loads(request.content)
         seen.append((request, data))
-        proposal_json = '{"tool":"support.summary","arguments":{}}'
+        proposal_json = json.dumps(
+            {
+                "thought": "synthetic",
+                "tool": "support.summary",
+                "arguments": json.dumps({}) if provider in ("openai", "groq") else {},
+            }
+        )
         response = (
             {"model": "resolved-test-model", "message": {"content": proposal_json}}
             if provider == "ollama"
@@ -297,10 +370,23 @@ async def test_provider_adapter_contract(provider, monkeypatch):
         assert data["random_seed"] == 7 and "seed" not in data
     elif provider == "ollama":
         assert data["options"]["seed"] == 7 and data["stream"] is False
-    else:
+    elif provider != "openai":
         assert data["seed"] == 7
     if provider != "ollama":
         assert seen[0][0].headers["Authorization"] == "Bearer SYNTHETIC_PROVIDER_KEY"
+    if provider in ("groq", "openai"):
+        assert data["response_format"]["type"] == "json_schema"
+        assert data["response_format"]["json_schema"]["strict"] is True
+        schema = data["response_format"]["json_schema"]["schema"]
+        assert set(schema["required"]) == {"thought", "tool", "arguments"}
+        assert schema["properties"]["tool"]["enum"] == list(SCHEMAS)
+        assert schema["properties"]["arguments"] == {"type": "string"}
+        system = next(m for m in data["messages"] if m["role"] == "system")
+        assert "arguments object as a JSON string" in system["content"]
+    if provider == "openai":
+        assert seen[0][0].url.host == "api.openai.com"
+        assert data["model"] == "gpt-4.1-mini"
+        assert "seed" not in data
 
 
 async def test_retry_after_applies_provider_cooldown(monkeypatch):
@@ -327,6 +413,107 @@ async def test_retry_after_applies_provider_cooldown(monkeypatch):
             load_snapshot("hardened"),
         )
     assert p.session("s")["cooldowns"]["groq"] > time.time() + 110
+
+
+async def test_provider_retries_one_unparseable_turn_before_any_tool_exec(monkeypatch):
+    import httpx
+
+    p = Planners()
+    p.session("s")["keys"]["openai"] = "synthetic-key"
+    original = httpx.AsyncClient
+    calls = []
+
+    def handler(request):
+        calls.append(json.loads(request.content))
+        content = "not json" if len(calls) == 1 else json.dumps(
+            {"thought": "ok", "tool": "support.summary", "arguments": "{}"}
+        )
+        return httpx.Response(
+            200,
+            json={"model": "test", "choices": [{"message": {"content": content}}]},
+        )
+
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kw: original(**kw, transport=httpx.MockTransport(handler)),
+    )
+    proposal, _ = await p.request(
+        "s", "openai", [{"role": "user", "content": "synthetic"}], load_snapshot("hardened")
+    )
+    assert proposal.tool == "support.summary"
+    assert len(calls) == 2 and "did not match" in calls[1]["messages"][-1]["content"]
+
+
+async def test_provider_does_not_retry_explicit_refusal(monkeypatch):
+    import httpx
+
+    p = Planners()
+    p.session("s")["keys"]["openai"] = "synthetic-key"
+    original = httpx.AsyncClient
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": None, "refusal": "no"}}]},
+        )
+
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kw: original(**kw, transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(ValueError, match=r"empty content \(refusal\)"):
+        await p.request(
+            "s", "openai", [{"role": "user", "content": "synthetic"}], load_snapshot("hardened")
+        )
+    assert len(calls) == 1
+
+
+async def test_provider_retries_invalid_http_200_body(monkeypatch):
+    import httpx
+
+    p = Planners()
+    p.session("s")["keys"]["openai"] = "synthetic-key"
+    original = httpx.AsyncClient
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(200, content=b"")
+        return httpx.Response(
+            200,
+            json={
+                "model": "test",
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "thought": "ok",
+                                    "tool": "support.summary",
+                                    "arguments": "{}",
+                                }
+                            )
+                        }
+                    }
+                ],
+            },
+        )
+
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kw: original(**kw, transport=httpx.MockTransport(handler)),
+    )
+    proposal, _ = await p.request(
+        "s", "openai", [{"role": "user", "content": "synthetic"}], load_snapshot("hardened")
+    )
+    assert proposal.tool == "support.summary" and len(calls) == 2
+    assert "not valid JSON" in json.loads(calls[1].content)["messages"][-1]["content"]
 
 
 def test_redaction_handles_json_escapes():

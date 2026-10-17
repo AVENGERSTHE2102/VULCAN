@@ -39,7 +39,7 @@ docker compose --profile prepare run --rm task-image
 docker compose up -d --build
 ```
 
-The initial build downloads base images and packages, so it needs an internet connection and may take a few minutes. When containers are healthy, open **[http://localhost:8080](http://localhost:8080)**. The dashboard is bound to your local machine; the lab’s API, tools, runner, and synthetic sinks are not published as host ports.
+The initial build downloads base images and packages, so it needs an internet connection, several gigabytes of free disk space, and may take a few minutes. When containers are healthy, open **[http://localhost:8080](http://localhost:8080)**. The dashboard is bound to your local machine; the lab’s API, tools, runner, and synthetic sinks are not published as host ports.
 
 On macOS/Linux, `make up` runs these same three commands if `make` is installed.
 
@@ -85,22 +85,28 @@ Then select Ollama in Settings. The first model download can be several gigabyte
 ## Troubleshooting
 
 - **Docker cannot connect to its daemon:** Start Docker Desktop, or start the Docker service on Linux, then retry `docker info`.
+- **Build or install reports “no space left on device”:** Free several gigabytes on the host, then retry. Docker images and frontend packages both use local disk space.
 - **Port 8080 is already in use:** Stop the other service using it, then run `docker compose up -d --build` again. The dashboard currently uses `127.0.0.1:8080`.
 - **The dashboard does not load immediately:** Check startup with `docker compose ps`; wait for services to become healthy, then refresh the page. View diagnostics with `docker compose logs --tail=100`.
 - **A Live provider test fails:** Confirm the key and model access in Settings. Scripted examples remain available without a key.
 
-## Development
+## Run without Docker (Python + Node)
 
-For development without Docker, install [uv](https://docs.astral.sh/uv/) and Node.js 24+, then:
+This starts the Python API and the Vite dashboard together. Install Python 3.12+, [uv](https://docs.astral.sh/uv/), Node.js 24+ (includes npm), and Git first; allow several gigabytes of free disk space for the frontend dependencies. From a terminal, this one-line command clones the project, installs its locked dependencies, and starts both servers:
 
 ```sh
-make install
-make dev-api       # terminal 1, API at localhost:8000
-make dev-web       # terminal 2, dashboard at localhost:5173
-make dev-services  # optional internal MCP and sink services
+git clone https://github.com/AVENGERSTHE2102/VULCAN.git && cd VULCAN && python3 scripts/dev.py
 ```
 
-Run checks with `make check`; run the mission test subset with `make retest`. The runner is simulated when its service is unavailable.
+On Windows PowerShell, use:
+
+```powershell
+git clone https://github.com/AVENGERSTHE2102/VULCAN.git; if ($?) { cd VULCAN; python scripts/dev.py }
+```
+
+Open **[http://localhost:5173](http://localhost:5173)**. Keep that terminal open; press **Ctrl+C** to stop both servers. For later runs from the project folder, use `python3 scripts/dev.py` (macOS/Linux) or `python scripts/dev.py` (Windows). Internal MCP and sink services are optional (`make dev-services`); without the runner service, inspection is explicitly simulated.
+
+Run checks with `make check`; run the mission test subset with `make retest`.
 
 ## Project guides
 

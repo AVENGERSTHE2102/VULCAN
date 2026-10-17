@@ -1,31 +1,113 @@
 # VULCAN 1.2 · Solo Learning Lab
 
-A local synthetic lab for agent prompt injection and containment. Seven missions connect attacker-controlled context to observable proposals, controls, and legitimate outcomes. The dashboard now includes an open prompt playground: edit the trusted task and untrusted text to test your own ideas against a mission’s gates. Custom prompts require a Live planner; they never silently switch to canned proposals. Verified evidence earns ranks and badges.
+VULCAN is a local, synthetic learning lab for prompt injection and agent containment. Explore seven missions, write your own attack prompts, inspect the agent’s proposals, and verify which controls allow or block each action. All business records and tool effects are synthetic.
+
+## Run with Docker
+
+The same Docker Compose setup works on macOS, Windows, and Linux. No API key is needed to start or use the labeled Scripted examples.
+
+### 1. Install prerequisites
+
+- **macOS and Windows:** Install and start [Docker Desktop](https://www.docker.com/products/docker-desktop/). On Windows, use the default Linux-container mode.
+- **Linux:** Install Docker Engine and the Docker Compose v2 plugin using your distribution’s Docker instructions. Ensure your user can run `docker` commands.
+- Install **Git** if it is not already available.
+
+Check that Docker is running:
 
 ```sh
-make up       # build and start the lab: dashboard http://localhost:8080
+docker --version
+docker compose version
+docker info
 ```
 
-No key required: examples use an explicit **Scripted** label. Enter a rotated planner key in Settings for **Live** runs. Custom prompts are sent to that planner with synthetic lab context. Optional Ollama: `docker compose --profile ollama up -d`, then `docker compose exec ollama ollama pull qwen2.5:3b`.
+### 2. Download the project
 
-For development without Docker:
+Open Terminal on macOS/Linux or PowerShell on Windows, then run:
+
+```sh
+git clone https://github.com/AVENGERSTHE2102/VULCAN.git
+cd VULCAN
+```
+
+### 3. Build and start the lab
+
+The first command builds a small isolated synthetic-fixture image and initializes its volume. The second builds and starts the dashboard and lab services:
+
+```sh
+docker compose --profile prepare build task-image
+docker compose --profile prepare run --rm task-image
+docker compose up -d --build
+```
+
+The initial build downloads base images and packages, so it needs an internet connection and may take a few minutes. When containers are healthy, open **[http://localhost:8080](http://localhost:8080)**. The dashboard is bound to your local machine; the lab’s API, tools, runner, and synthetic sinks are not published as host ports.
+
+On macOS/Linux, `make up` runs these same three commands if `make` is installed.
+
+### 4. Try a mission
+
+Start with the Scripted examples to see a complete trace without a provider account. Open a mission, enter or edit the trusted task and untrusted content, run it, then inspect the proposal, policy decision, and synthetic result. Harden the mission and run it again to compare outcomes.
+
+For custom prompts that need a real model, open **Settings** in the dashboard and add your own provider key there. VULCAN keeps keys in server memory, does not return them to the browser, and clears them when the API restarts. Live requests send synthetic lab context and model output to the provider you select. Never enter real customer data or production credentials.
+
+### Stop, restart, and reset
+
+Stop the containers while keeping your local progress and settings data:
+
+```sh
+docker compose down
+```
+
+Start them again later:
+
+```sh
+docker compose up -d
+```
+
+Use the dashboard’s reset controls to reset a mission or the whole lab. To erase all Compose-stored lab progress and prepared fixture data, run:
+
+```sh
+docker compose down --volumes
+```
+
+This permanently removes the lab database, active configuration, fixture volume, and any optional Ollama model data.
+
+### Optional local Ollama model
+
+Ollama is not required. To run the optional local model service and fetch the suggested model:
+
+```sh
+docker compose --profile ollama up -d
+docker compose exec ollama ollama pull qwen2.5:3b
+```
+
+Then select Ollama in Settings. The first model download can be several gigabytes.
+
+## Troubleshooting
+
+- **Docker cannot connect to its daemon:** Start Docker Desktop, or start the Docker service on Linux, then retry `docker info`.
+- **Port 8080 is already in use:** Stop the other service using it, then run `docker compose up -d --build` again. The dashboard currently uses `127.0.0.1:8080`.
+- **The dashboard does not load immediately:** Check startup with `docker compose ps`; wait for services to become healthy, then refresh the page. View diagnostics with `docker compose logs --tail=100`.
+- **A Live provider test fails:** Confirm the key and model access in Settings. Scripted examples remain available without a key.
+
+## Development
+
+For development without Docker, install [uv](https://docs.astral.sh/uv/) and Node.js 24+, then:
 
 ```sh
 make install
-make dev-api  # terminal 1, localhost:8000
-make dev-web  # terminal 2, localhost:5173
+make dev-api       # terminal 1, API at localhost:8000
+make dev-web       # terminal 2, dashboard at localhost:5173
+make dev-services  # optional internal MCP and sink services
 ```
 
-Internal MCP and sink services: `make dev-services`. Without the runner service the inspection is explicitly simulated.
+Run checks with `make check`; run the mission test subset with `make retest`. The runner is simulated when its service is unavailable.
 
-```sh
-make check
-make retest
-make down
-```
+## Project guides
 
-See [architecture](docs/architecture.md), [mission guide](docs/missions.md), [offline preparation](docs/offline.md), [facilitator flow](docs/facilitator.md), and [release status](docs/release-status.md). Run one API worker. Keys are memory-only; use synthetic data throughout.
+- [Architecture](docs/architecture.md)
+- [Mission guide](docs/missions.md)
+- [Offline preparation](docs/offline.md)
+- [Facilitator flow](docs/facilitator.md)
+- [Release status](docs/release-status.md)
 
-Run `uv run python scripts/retest.py` against the development API for a fresh-session HTTP acceptance run (all seven missions, both snapshots). Existing-session CLI reset: `uv run python scripts/reset.py --mission 1` or `--all` reads the local browser session cookie via hidden stdin. Dashboard reset buttons are simpler for normal use.
-
-Distribution branches are created with `make branches` after committing verification. `vulnerable` starts with controls off; `known-good` starts hardened. Existing session policy and active YAML still take precedence; use a fresh session/global reset when comparing branch defaults. Neither branch implies that pending hosted-calibration release gates have passed.
+Use synthetic data only. Run one API worker. See the [release status](docs/release-status.md) for calibration limits and current readiness.
